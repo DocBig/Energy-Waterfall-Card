@@ -219,7 +219,7 @@
       if (!config.entities.grid_power)    throw new Error("grid_power required");
       if (!config.entities.load_power)    throw new Error("load_power required");
 
-      const defC = { solar:"#FFD400", battery_charge:"#00C853", battery_discharge:"#FF6D00", grid:"#FF3B30" };
+      const defC = { solar:"#FFD400", battery_charge:"#00C853", battery_discharge:"#118522", grid:"#FF3B30" };
       const raw  = config.colors || {};
 
       const needsReload =
@@ -489,7 +489,7 @@
       );
     }
 
-    // ── Live-Balken gezielt updaten (kein DOM-Rebuild) ──────────────────────
+    // ── Live bar targeted update (no DOM rebuild) ───────────────────────────
     _updateLiveBar() {
       const svg = this.shadowRoot.getElementById("svg");
       if (!svg) return;
@@ -498,9 +498,9 @@
       const isV  = cfg.layout === "vertical";
 
       if (isV) {
-        // Vertikal: Live-Balken ist ein horizontaler Streifen ganz oben
+        // Vertical: live bar is a horizontal strip at the very top
         const lbs   = cfg.live_bar_size || 15;             // configurable live strip height
-        const labW  = 52;                                   // Space for time labels on the rightschriftung rechts
+        const labW  = 52;                                   // Space for time labels on the rightrechts
         const cardW = Math.max(200, this._cardWidth - labW - 32); // -32 for card padding
         const halfX = cardW / 2;                            // FIX: echte Kartenmitte
         const pxW   = halfX / this._maxScale;
@@ -884,26 +884,26 @@
 
     // ── VERTICAL Layout ─────────────────────────────────────────────────────
     // 90° gegen Uhrzeigersinn:
-    //   Zeitachse:   unten = alt (slots[0]), oben = neu (slots[last]) + Live-Streifen ganz oben
-    //   Energie:     links = Solar + Akku laden  |  rechts = Entladen + Netz
+    //   Time axis:   bottom = old (slots[0]), top = new (slots[last]) + live strip at the very top
+    //   Energy:      left = Solar + Battery charging  |  right = Discharging + Grid
     //   Center:       vertical line through halfX
     _renderVertical(cfg, C, lang, slots, live, scale) {
-      const lbs    = cfg.live_bar_size || 15;              // einstellbare Live-Streifen-Höhe
-      const labW   = 52;                                   // Width for time labels on the rightbeschriftung rechts
+      const lbs    = cfg.live_bar_size || 15;              // configurable live strip height
+      const labW   = 52;                                   // Width for time labels on the right
       const cardW  = Math.max(200, this._cardWidth - labW - 32); // -32 for card padding
       const lbH    = lbs + 4;                              // Live strip height (2px Puffer zur Trennlinie)
-      const wfW    = cardW;                                 // Verlauf nutzt volle Chartbreite
-      const halfX  = cardW / 2;                            // FIX: echte Mitte = cardW/2
+      const wfW    = cardW;                                 // History uses full chart width
+      const halfX  = cardW / 2;                            // Center of chart = cardW/2
       const pxW    = halfX / scale;                        // Pixel pro Watt
 
       const n       = Math.max(1, slots.length);
       const slotH   = cfg.height / n;                      // Height per time slot
       const slotGap = Math.max(0.3, slotH * 0.08);
-      const wfH     = cfg.height;                          // Gesamthöhe Verlauf
+      const wfH     = cfg.height;                          // Total history height
       const offsetY = lbH + 4;                             // History starts after live strip
       const totH    = offsetY + wfH + 40;                  // SVG total height (+kW labels at bottom)
 
-      const tickW2   = cfg.tick_height_pct / 100;          // Ausdehnung Stundenmarker (als Anteil der Breite)
+      const tickW2   = cfg.tick_height_pct / 100;          // Time marker extension (as fraction of widite)
       const tickLeft  = halfX - (wfW * tickW2) / 2;
       const tickRight = halfX + (wfW * tickW2) / 2;
       const tickStroke = cfg.tick_width_px;
@@ -924,8 +924,8 @@
       }
 
       // Slots:
-      // slots[0] = ältester → ganz unten → y = offsetY + wfH - slotH
-      // slots[last] = neuester → ganz oben → y = offsetY
+      // slots[0] = oldest → very bottom → y = offsetY + wfH - slotH
+      // slots[last] = newest → very top → y = offsetY
       for (let i = 0; i < slots.length; i++) {
         const s  = slots[i];
         // i=0 → bottom, i=last → top: y decreases as i increases
@@ -971,9 +971,9 @@
       svg += `<text x="${(wfW + 2).toFixed(1)}" y="${(lbH/2 + 4).toFixed(1)}" font-size="9"
         text-anchor="start" fill="var(--secondary-text-color,#aaa)">▲</text>`;
 
-      // Live-Streifen (ganz oben, IDs lb0-lb4)
-      // Links: solar (innen) + batt_charge (außen)
-      // Rechts: batt_discharge (innen) + grid (außen)
+      // Live strip (at the very top, IDs lb0-lb4)
+      // Left: solar (inner) + batt_charge (outer)
+      // Right: batt_discharge (inner) + grid (outer)
       const lSW  = live.solar_to_house * pxW;
       const lBcW = live.batt_charge    * pxW;
       const lBdW = live.batt_discharge * pxW;
@@ -981,7 +981,7 @@
       const leftW  = lSW + lBcW;
       const rightW = lBdW + lGbW;
       const lY = 2;
-      const lH = lbs;                                      // Live-Streifen-Höhe = live_bar_size (exakt)
+      const lH = lbs;                                      // Live strip height = live_bar_size (exact)
 
       svg += mkIdRect("lb0", halfX - leftW,  lY, lBcW, lH, C.battery_charge);
       svg += mkIdRect("lb1", halfX - lSW,    lY, lSW,  lH, C.solar);
@@ -1006,7 +1006,7 @@
         // xL decreases (leftward): check sufficient distance to last label
         if (lastXL - xL >= minLblPx) { visW.push(w); lastXL = xL; lastXR = xR; maxW = w; }
       }
-      // zeichnen: Zahlen ohne Einheit, nur beim letzten "kW" anhängen
+      // draw: numbers without unit, only append "kW" on outermost label
       for (const w of visW) {
         const num  = w >= 1000 ? (w/1000) : (w/1000).toFixed(1);
         const isLast = w === maxW;
@@ -1202,7 +1202,7 @@
       overlay.id = "ewf-overlay";
       overlay.className = "ewf-overlay";
 
-      // Overlay-Karte
+      // Overlay card
       const card = document.createElement("div");
       card.className = "ewf-overlay-card";
 
@@ -1408,7 +1408,7 @@
           // ── Vertikal ──────────────────────────────────────────────────
           // Slot center (y-axis = time)
           const slotY  = offsetY + (n - 1 - idx) * slotH + slotH / 2;
-          // Slot-Breite ausnutzen: Tick über/unter dem gesamten Slot
+          // Use slot width: tick above/below the entire slot
           const slotTop    = offsetY + (n - 1 - idx) * slotH;
           const slotBottom = slotTop + slotH;
           // Max: label left of center line, OFF px from slot edge
@@ -1576,7 +1576,7 @@
     }
 
     setConfig(config) {
-      const defC = { solar:"#FFD400", battery_charge:"#00C853", battery_discharge:"#FF6D00", grid:"#FF3B30" };
+      const defC = { solar:"#FFD400", battery_charge:"#00C853", battery_discharge:"#118522", grid:"#FF3B30" };
       const raw  = config.colors || {};
       this._config = {
         ...config,
@@ -1799,7 +1799,7 @@
         colors: {
           solar:             g("ct_solar")             || "#FFD400",
           battery_charge:    g("ct_battery_charge")    || "#00C853",
-          battery_discharge: g("ct_battery_discharge") || "#FF6D00",
+          battery_discharge: g("ct_battery_discharge") || "#118522",
           grid:              g("ct_grid")              || "#FF3B30",
         },
       };
