@@ -251,34 +251,6 @@ Bei umgekehrtem Batterie-Vorzeichen: `invert_battery: true`
 
 ---
 
-## Problemlösung
-
-### Konstante/flache Werte nachts
-
-Wenn der Chart nachts lange konstante Blöcke zeigt, schreibt der HA Recorder wahrscheinlich nur bei Zustandsänderungen — nicht periodisch. Wenn Sensoren stundenlang denselben Wert melden (z.B. konstante Batterie-Entladung), speichert der Recorder nur einen Eintrag und die Karte füllt die Lücken per Forward-fill.
-
-**Lösung:** Sensoren explizit in der Recorder-Konfiguration eintragen und `force_update` aktivieren:
-
-```yaml
-# configuration.yaml
-recorder:
-  include:
-    entities:
-      - sensor.pv_power
-      - sensor.battery_power
-      - sensor.grid_power
-      - sensor.load_power
-```
-
-Und für jeden Sensor (z.B. in der Integrations-Konfiguration):
-```yaml
-force_update: true
-```
-
-Damit schreibt HA bei jedem Poll-Intervall einen neuen Recorder-Eintrag — auch wenn sich der Wert nicht geändert hat. Das Ergebnis ist ein detaillierter und akkurater Chart rund um die Uhr.
-
----
-
 ## Technische Details
 
 - **Keine ES-Module:** `(function(){...})()`, kein `type: module`

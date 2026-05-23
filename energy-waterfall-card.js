@@ -347,6 +347,7 @@
           end_time:   endTime.toISOString(),
           entity_ids: [entities.pv_power, entities.battery_power, entities.grid_power, entities.load_power],
           minimal_response: true,
+          significant_changes_only: false,
         });
 
         if (!history || typeof history !== "object") {
@@ -374,9 +375,11 @@
           for (const [entityId, points] of Object.entries(entries)) {
             if (!Array.isArray(points)) continue;
             for (const point of points) {
-              let ts = point.lu ?? point.lc ?? point.last_changed ?? point.last_updated;
+              let ts = point.lu ?? point.lc ?? point.last_updated ?? point.last_changed;
               if (ts === undefined || ts === null) continue;
-              const ms  = ts < 1e10 ? ts * 1000 : ts;
+              // Handle both Unix timestamp (minimal_response) and ISO string (full response)
+              const ms = typeof ts === "string" ? new Date(ts).getTime() : (ts < 1e10 ? ts * 1000 : ts);
+              if (isNaN(ms)) continue;
               const idx = Math.floor((ms - startTime.getTime()) / slotMs);
               if (idx < 0 || idx >= slotCount) continue;
               const rawVal = parseFloat(point.s ?? point.state);
@@ -391,9 +394,17 @@
           }
 
           const computed = acc.map(a => {
-            if (a.pvC && a.batC && a.gridC && a.loadC)
-              return calcMix(a.loadS/a.loadC, a.batS/a.batC, a.gridS/a.gridC, invert_battery);
-            return null;
+            // Use available sensors; missing sensors default to 0 (e.g. PV=0 at night)
+            const pv   = a.pvC   ? a.pvS/a.pvC     : 0;
+            const bat  = a.batC  ? a.batS/a.batC   : null;
+            const grid = a.gridC ? a.gridS/a.gridC : null;
+            const load = a.loadC ? a.loadS/a.loadC : null;
+            // Need at least battery or load to compute a meaningful slot
+            if (bat === null && load === null) return null;
+            const batVal  = bat  ?? 0;
+            const gridVal = grid ?? 0;
+            const loadVal = load ?? (pv + Math.max(0, batVal) - Math.min(0, batVal) - gridVal);
+            return calcMix(loadVal, batVal, gridVal, invert_battery);
           });
 
           // Forward-fill
