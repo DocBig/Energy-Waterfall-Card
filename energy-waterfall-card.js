@@ -1689,7 +1689,7 @@
           <div class="section">${L("e_colors")}</div>
           ${this._cr("solar",            col.solar            ||"#FFD400", L("e_color_solar"))}
           ${this._cr("battery_charge",   col.battery_charge   ||"#00C853", L("e_color_charge"))}
-          ${this._cr("battery_discharge",col.battery_discharge||"#FF6D00", L("e_color_discharge"))}
+          ${this._cr("battery_discharge",col.battery_discharge||"#118522", L("e_color_discharge"))}
           ${this._cr("grid",             col.grid             ||"#FF3B30", L("e_color_grid"))}
         </div>
       `;
