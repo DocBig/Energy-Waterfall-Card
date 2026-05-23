@@ -1,0 +1,6 @@
+{
+  "name": "Energy Waterfall Card",
+  "content_in_root": true,
+  "filename": "energy-waterfall-card.js",
+  "homeassistant": "2023.3.0"
+}
