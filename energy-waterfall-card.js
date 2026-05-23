@@ -1155,7 +1155,10 @@
 
       // Overlay-Element
       // Insert overlay style globally into document (Shadow DOM doesn't apply here)
-      if (!document.getElementById("ewf-global-style")) {
+      // Always regenerate overlay style to pick up current theme (light/dark)
+      const existingGs = document.getElementById("ewf-global-style");
+      if (existingGs) existingGs.remove();
+      {
         const gs = document.createElement("style");
         gs.id = "ewf-global-style";
         // Read theme variables directly from document.documentElement
