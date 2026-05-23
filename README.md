@@ -250,6 +250,34 @@ For reversed battery sign convention: `invert_battery: true`
 
 ---
 
+## Troubleshooting
+
+### Flat/constant values at night
+
+If the chart shows long constant blocks especially at night, the HA Recorder is likely only writing state changes — not periodic updates. When sensors report the same value for hours (e.g. constant battery discharge), the Recorder stores only one entry and the card fills the gaps via forward-fill.
+
+**Fix:** Add your sensors explicitly to the Recorder configuration and enable `force_update`:
+
+```yaml
+# configuration.yaml
+recorder:
+  include:
+    entities:
+      - sensor.pv_power
+      - sensor.battery_power
+      - sensor.grid_power
+      - sensor.load_power
+```
+
+And for each sensor (e.g. in your integration config):
+```yaml
+force_update: true
+```
+
+This forces HA to write a new Recorder entry at every poll interval even if the value hasn't changed — resulting in a detailed and accurate chart around the clock.
+
+---
+
 ## Technical Details
 
 - **No ES modules:** `(function(){...})()`, no `type: module`
