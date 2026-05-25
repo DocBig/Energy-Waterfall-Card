@@ -2,10 +2,10 @@
 
 A custom Home Assistant Lovelace card that visualizes energy flow from PV, battery and grid as a waterfall diagram with live display and history.
 
-![Version](https://img.shields.io/badge/version-1.0.0-green)
+![Version](https://img.shields.io/badge/version-1.1.0-green)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.3%2B-blue)
 
-🇩🇪 [Deutsche Dokumentation](README_de.md)
+[![DE](https://img.shields.io/badge/README-DE-orange?style=flat-square)](README_de.md) [![EN](https://img.shields.io/badge/README-EN-blue?style=flat-square)](README.md)
 
 ---
 
@@ -43,6 +43,12 @@ A custom Home Assistant Lovelace card that visualizes energy flow from PV, batte
 - **Responsive** — ResizeObserver with debounce, adapts to card width
 - **Dark/Light mode** — fullscreen overlay automatically adopts active HA theme
 - **Bilingual** — German and English (automatic via HA language setting), including editor
+- **History Viewer** — browse any past day directly in the card or fullscreen overlay
+  - Date picker + ◀/▶ day navigation
+  - Configurable start and end time (e.g. solar hours only: 06:00–21:00)
+  - Automatic slot duration based on time window (1/2/4 min)
+  - Live bar hidden in historical mode
+  - Navigation available in fullscreen overlay too
 - **No external dependencies** — pure Vanilla JS, no Lit, no imports
 
 ---
@@ -114,6 +120,10 @@ overlay_scale: 1.4            # Font scale factor in fullscreen overlay (1.0–3
 min_scale_w: 5000             # Minimum energy axis scale in Watts
 headroom_pct: 15              # Extra space above peak value in % (0–50)
 
+# History viewer defaults (overridable via navigation bar)
+history_start: "00:00"        # Default start time for historical view
+history_end:   "24:00"        # Default end time for historical view
+
 # Options
 invert_battery: false         # Invert battery sign (for non-Deye inverters)
 
@@ -153,6 +163,8 @@ colors:
 | `height` | `200` | Card height in px |
 | `min_scale_w` | `5000` | Minimum energy axis scale in Watts |
 | `headroom_pct` | `15` | Extra space above peak value in % |
+| `history_start` | `"00:00"` | Default start time for history viewer |
+| `history_end` | `"24:00"` | Default end time for history viewer |
 | `invert_battery` | `false` | Invert battery sign |
 | `colors.solar` | `#FFD400` | Solar color (hex) |
 | `colors.battery_charge` | `#00C853` | Battery charging color (hex) |
@@ -247,6 +259,33 @@ For reversed battery sign convention: `invert_battery: true`
 - Energy: **left** = Solar + Charging, **right** = Discharging + Grid import
 - Live strip at the **top**
 - Time markers every 2 hours
+
+---
+
+## History Viewer
+
+Click ◀ or enter a date in the navigation bar below the chart to browse historical days.
+
+```
+[◀]  [📅 2026-05-22]  [▶]  │  [06:00] – [21:00]  │  [▶ Live]
+```
+
+- **◀/▶** — navigate day by day
+- **Date picker** — jump directly to any date
+- **Start/End time** — limit the time window, e.g. solar hours only (`06:00–21:00`)
+- **▶ Live** — return to live rolling window
+- **Auto slot duration** — automatically chosen based on time window:
+  - ≤ 4h → 1 min slots
+  - ≤ 12h → 2 min slots
+  - 24h → 4 min slots
+- **Fullscreen overlay** — navigation bar available there too
+- **How far back?** — limited by HA Recorder retention (`purge_keep_days`, default 10 days)
+
+> **Note:** To extend history retention, set `purge_keep_days` in your `configuration.yaml`:
+> ```yaml
+> recorder:
+>   purge_keep_days: 30
+> ```
 
 ---
 

@@ -193,6 +193,9 @@
       this._hoveredSlot    = null;
       this._tooltipTimer   = null;
       this._pendingRender  = false;
+      this._historyDate  = null;   // null = live mode, Date = historical
+      this._historyStart = "00:00"; // day start time
+      this._historyEnd   = "24:00"; // day end time
       this._resizeTimer    = null;
       this._renderAfterTooltip = null;
       this._checkState     = { missing:[], allGood:true };
@@ -246,6 +249,8 @@
         headroom_pct:        15,
         height:              200,
         invert_battery:      false,
+        history_start:       "00:00",
+        history_end:         "24:00",
         ...config,
         entities_kw: { pv_power:false, battery_power:false, grid_power:false, load_power:false, ...(config.entities_kw||{}) },
         colors: {
@@ -333,12 +338,38 @@
 
     async _loadHistory() {
       if (!this._hassRef || !this._config) { this._loadingHistory = false; return; }
-      const { time_window_h, slot_duration_min, entities, invert_battery } = this._config;
-      const slotCount  = Math.floor(time_window_h * 60 / slot_duration_min);
-      this._slotBuffer = new SlotBuffer(slotCount);
+      const { entities, invert_battery } = this._config;
 
-      const endTime   = new Date();
-      const startTime = new Date(endTime.getTime() - time_window_h * 3600 * 1000);
+      // Determine time range: historical mode or live rolling window
+      let startTime, endTime, slot_duration_min, slotCount;
+
+      if (this._historyDate) {
+        // Historical mode: use local date to avoid UTC offset issues
+        const ld   = this._historyDate;
+        const year = ld.getFullYear(), mon = ld.getMonth(), day = ld.getDate();
+        const [sh, sm] = (this._historyStart || "00:00").split(":").map(Number);
+        const eh       = this._historyEnd === "24:00" ? 23 : parseInt(this._historyEnd);
+        const em       = this._historyEnd === "24:00" ? 59 : parseInt((this._historyEnd.split(":")[1])||0);
+        startTime = new Date(year, mon, day, sh, sm, 0);
+        endTime   = new Date(year, mon, day, eh, em, 59);
+        // If selected date is today, cap endTime at now to avoid forward-fill into the future
+        const now = new Date();
+        if (endTime > now) endTime = now;
+        const windowH  = (endTime - startTime) / 3600000;
+        // Auto slot duration based on window size
+        slot_duration_min = windowH <= 4 ? 1 : windowH <= 12 ? 2 : 4;
+        slotCount = Math.floor((endTime - startTime) / (slot_duration_min * 60 * 1000));
+      } else {
+        // Live mode: rolling window
+        const { time_window_h, slot_duration_min: sdm } = this._config;
+        slot_duration_min = sdm;
+        slotCount  = Math.floor(time_window_h * 60 / slot_duration_min);
+        endTime    = new Date();
+        startTime  = new Date(endTime.getTime() - time_window_h * 3600 * 1000);
+      }
+
+      this._slotBuffer = new SlotBuffer(slotCount);
+      this._historySlotDuration = slot_duration_min;
 
       try {
         const history = await this._hassRef.callWS({
@@ -444,7 +475,7 @@
     }
 
     _tick() {
-      if (!this._hassRef || !this._config) return;
+      if (!this._hassRef || !this._config || this._historyDate) return;
       const { entities, invert_battery, entities_kw } = this._config;
       const ekw  = entities_kw || {};
       const pv   = toW(parseFloat(this._hassRef.states[entities.pv_power]?.state),      ekw.pv_power);
@@ -502,6 +533,7 @@
 
     // ── Live bar targeted update (no DOM rebuild) ───────────────────────────
     _updateLiveBar() {
+      if (this._historyDate) return; // skip in historical mode
       const svg = this.shadowRoot.getElementById("svg");
       if (!svg) return;
       const cfg  = this._config;
@@ -586,6 +618,14 @@
       return date.toLocaleTimeString(this._lang === "de" ? "de-DE" : "en-US", { hour:"2-digit", minute:"2-digit" });
     }
 
+    _snapTickTime(ms, slotMs) {
+      // Snap tick label to nearest full hour/minute for cleaner display
+      const hourMs = 3600 * 1000;
+      const rounded = Math.round(ms / hourMs) * hourMs;
+      // Only snap if within half a slot of a full hour
+      return Math.abs(ms - rounded) < slotMs ? rounded : ms;
+    }
+
     // ── Vollständiges Re-Render ─────────────────────────────────────────────
     _render() {
       if (!this._config) return;
@@ -600,11 +640,33 @@
       const isV     = cfg.layout === "vertical";
 
       const expandBtn = `<div class="expand-btn" id="ewf-expand" title="Vollbild">⤢</div>`;
+      const isHistorical = !!this._historyDate;
+      const todayStr = new Date().toISOString().slice(0,10);
+      const histDateStr = isHistorical
+        ? `${this._historyDate.getFullYear()}-${String(this._historyDate.getMonth()+1).padStart(2,"0")}-${String(this._historyDate.getDate()).padStart(2,"0")}`
+        : todayStr;
+      const navBar = `
+        <div class="history-nav">
+          <button id="ewf-prev">◀</button>
+          <input type="date" id="ewf-date" value="${histDateStr}" max="${todayStr}">
+          <button id="ewf-next" ${histDateStr >= todayStr ? "disabled" : ""}>▶</button>
+          <span class="sep">│</span>
+          <input type="time" id="ewf-start" value="${this._historyStart || "00:00"}">
+          <span>–</span>
+          <input type="time" id="ewf-end" value="${(this._historyEnd||"24:00").replace("24:00","23:59")}">
+          <span class="sep">│</span>
+          <button id="ewf-live" class="${!isHistorical?"active":""}">▶ Live</button>
+        </div>`;
+      // In historical mode, override slot_duration_min with auto-calculated value
+      const effectiveCfg = this._historyDate && this._historySlotDuration
+        ? { ...cfg, slot_duration_min: this._historySlotDuration }
+        : cfg;
+
       const body = loading
-        ? this._renderLoading(cfg)
+        ? this._renderLoading(effectiveCfg)
         : isV
-          ? this._renderVertical(cfg, C, lang, slots, live, scale)
-          : this._renderHorizontal(cfg, C, lang, slots, live, scale);
+          ? this._renderVertical(effectiveCfg, C, lang, slots, live, scale)
+          : this._renderHorizontal(effectiveCfg, C, lang, slots, live, scale);
 
       const warn = !this._checkState.allGood
         ? `<div class="warning">⚠ ${tr(lang,"missing_entities")}: ${this._checkState.missing.join(", ")}</div>`
@@ -617,19 +679,20 @@
           ${!loading ? expandBtn : ""}
           ${warn}
           ${body}
+          ${navBar}
         </div>`;
 
       if (!loading && slots.length > 0) {
         isV
-          ? this._attachEventsV(slots, cfg, C)
-          : this._attachEventsH(slots, cfg, C);
+          ? this._attachEventsV(slots, effectiveCfg, C)
+          : this._attachEventsH(slots, effectiveCfg, C);
       }
       if (!loading && slots.length > 0) {
         // Min/Max trigger in legend
         const mmTrigger = shadow.querySelector(".ewf-minmax-trigger");
         const tip2      = shadow.getElementById("tip");
         if (mmTrigger && tip2) {
-          const toMs2 = (cfg.tooltip_timeout_s ?? 5) * 1000;
+          const toMs2 = (effectiveCfg.tooltip_timeout_s ?? 5) * 1000;
           const hide2 = () => {
             tip2.style.display = "none";
             const svgEl = shadow.getElementById("svg");
@@ -678,6 +741,63 @@
             this._openOverlay();
           });
         }
+
+        // Navigation bar event listeners
+        const dateEl  = shadow.getElementById("ewf-date");
+        const startEl = shadow.getElementById("ewf-start");
+        const endEl   = shadow.getElementById("ewf-end");
+        const prevEl  = shadow.getElementById("ewf-prev");
+        const nextEl  = shadow.getElementById("ewf-next");
+        const liveEl  = shadow.getElementById("ewf-live");
+
+        const showLoading = () => { const l = shadow.getElementById("ewf-loading"); if (l) l.style.display = "inline"; };
+        const hideLoading = () => { const l = shadow.getElementById("ewf-loading"); if (l) l.style.display = "none"; };
+
+        const loadHistorical = () => {
+          if (!dateEl) return;
+          const [dy, dm, dd] = dateEl.value.split("-").map(Number);
+          this._historyDate  = new Date(dy, dm-1, dd, 12, 0, 0); // local noon
+          this._historyStart = startEl?.value || "00:00";
+          const ev = endEl?.value || "23:59";
+          this._historyEnd   = ev === "23:59" ? "24:00" : ev;
+          this._historyLoaded = false;
+          this._render();
+          showLoading();
+          this._loadHistory().then(hideLoading).catch(hideLoading);
+        };
+
+        if (dateEl)  dateEl.addEventListener("change",  loadHistorical);
+        if (startEl) startEl.addEventListener("change", loadHistorical);
+        if (endEl)   endEl.addEventListener("change",   loadHistorical);
+
+        if (prevEl) prevEl.addEventListener("click", () => {
+          const d = this._historyDate ? new Date(this._historyDate) : new Date();
+          d.setDate(d.getDate() - 1);
+          this._historyDate = d;
+          this._historyLoaded = false;
+          this._render();
+          showLoading();
+          this._loadHistory().then(hideLoading).catch(hideLoading);
+        });
+
+        if (nextEl) nextEl.addEventListener("click", () => {
+          const d = this._historyDate ? new Date(this._historyDate) : new Date();
+          d.setDate(d.getDate() + 1);
+          const today = new Date();
+          if (d.toISOString().slice(0,10) > today.toISOString().slice(0,10)) return;
+          this._historyDate = d;
+          this._historyLoaded = false;
+          this._render();
+          showLoading();
+          this._loadHistory().then(hideLoading).catch(hideLoading);
+        });
+
+        if (liveEl) liveEl.addEventListener("click", () => {
+          this._historyDate  = null;
+          this._historyLoaded = false;
+          this._render();
+          this._loadHistory();
+        });
       }
     }
 
@@ -713,6 +833,36 @@
         }
         .legend-item { display:flex; align-items:center; gap:4px; }
         .legend-dot  { width:10px; height:10px; border-radius:2px; flex-shrink:0; }
+        .history-nav {
+          display:flex; align-items:center; gap:6px; flex-wrap:wrap;
+          margin-top:8px; font-size:11px;
+          color:var(--secondary-text-color,#888);
+        }
+        .history-nav input[type="date"],
+        .history-nav input[type="time"] {
+          background:var(--secondary-background-color,rgba(128,128,128,.1));
+          border:1px solid var(--divider-color,rgba(128,128,128,.3));
+          border-radius:6px; padding:3px 6px;
+          color:var(--primary-text-color,#333);
+          font-size:11px; cursor:pointer;
+        }
+        .history-nav button {
+          background:var(--secondary-background-color,rgba(128,128,128,.1));
+          border:1px solid var(--divider-color,rgba(128,128,128,.3));
+          border-radius:6px; padding:3px 8px;
+          color:var(--primary-text-color,#333);
+          font-size:11px; cursor:pointer;
+          transition:background .15s;
+        }
+        .history-nav button:hover {
+          background:var(--primary-color,rgba(128,128,128,.25));
+          color:#fff;
+        }
+        .history-nav button.active {
+          background:var(--primary-color,#039be5);
+          color:#fff; border-color:transparent;
+        }
+        .history-nav .sep { opacity:.4; }
         .expand-btn {
           position:absolute; top:12px; right:12px;
           width:28px; height:28px;
@@ -827,11 +977,18 @@
       while (slotW * tickSlots < minTickPx && tickSlots < slots.length) {
         tickSlots *= 2;
       }
-      const startMs   = Date.now() - cfg.time_window_h * 3600 * 1000;
+      // startMs: use historical date if set, otherwise live rolling window
+      const startMs = this._historyDate
+        ? (() => {
+            const ld = this._historyDate;
+            const [sh, sm] = (this._historyStart || "00:00").split(":").map(Number);
+            return new Date(ld.getFullYear(), ld.getMonth(), ld.getDate(), sh, sm, 0).getTime();
+          })()
+        : Date.now() - cfg.time_window_h * 3600 * 1000;
       let tickCount = 1;  // Start at 1 → first tick on lower level
       for (let i = 0; i < slots.length; i += tickSlots) {
         const x     = lPad + i * slotW + slotW / 2;
-        const label = this._formatTime(new Date(startMs + i * slotMs + slotMs / 2));
+        const label = this._formatTime(new Date(this._snapTickTime(startMs + i * slotMs + slotMs / 2, slotMs)));
         const yLbl  = tickCount % 2 === 0 ? height + 12 : height + (height > 280 ? 22 : 15) + 12;  // larger in overlay
         svg += svgLine(x, tickTop, x, tickBot, "var(--secondary-text-color,#aaa)", 0.5, tickW);
         svg += `<text x="${x.toFixed(1)}" y="${yLbl.toFixed(1)}" font-size="9" text-anchor="middle" fill="var(--secondary-text-color,#aaa)">${label}</text>`;
@@ -843,24 +1000,24 @@
       svg += svgLine(lPad + wfW, 0, lPad + wfW, height, "var(--secondary-text-color,#aaa)", 0.35, 1);
 
       const lX  = lPad + wfW + (lbW - lbs) / 2;
-      svg += `<text x="${(lX + lbs/2).toFixed(1)}" y="${(height+12).toFixed(1)}" font-size="9" text-anchor="middle" fill="var(--secondary-text-color,#aaa)">▶</text>`;
-
-
-      // Live-Balken (horizontal, IDs lb0-lb4)
-      const lBcH = live.batt_charge    * pxW;
-      const lSH  = live.solar_to_house * pxW;
-      const lBdH = live.batt_discharge * pxW;
-      const lGbH = live.grid_buy       * pxW;
-      const topH = lBcH + lSH;
-      const botH = lBdH + lGbH;
-      svg += mkIdRect("lb0", lX, half - topH,  lbs, lBcH, C.battery_charge);
-      svg += mkIdRect("lb1", lX, half - lSH,   lbs, lSH,  C.solar);
-      svg += mkIdRect("lb2", lX, half,          lbs, lBdH, C.battery_discharge);
-      svg += mkIdRect("lb3", lX, half + lBdH,   lbs, lGbH, C.grid);
-      svg += `<rect id="lb4" x="${(lX-2).toFixed(1)}" y="${(half-topH-2).toFixed(1)}"
-        width="${(lbs+4).toFixed(1)}" height="${Math.max(0,topH+botH+4).toFixed(1)}"
-        fill="none" stroke="var(--primary-text-color,#888)" stroke-opacity="0.3"
-        stroke-width="1" rx="4" ry="4" display="${topH+botH>0?'':'none'}"/>`;
+      // Live bar – only in live mode (same pattern as vertical)
+      if (!this._historyDate) {
+        svg += `<text x="${(lX + lbs/2).toFixed(1)}" y="${(height+12).toFixed(1)}" font-size="9" text-anchor="middle" fill="var(--secondary-text-color,#aaa)">▶</text>`;
+        const lBcH = live.batt_charge    * pxW;
+        const lSH  = live.solar_to_house * pxW;
+        const lBdH = live.batt_discharge * pxW;
+        const lGbH = live.grid_buy       * pxW;
+        const topH = lBcH + lSH;
+        const botH = lBdH + lGbH;
+        svg += mkIdRect("lb0", lX, half - topH,  lbs, lBcH, C.battery_charge);
+        svg += mkIdRect("lb1", lX, half - lSH,   lbs, lSH,  C.solar);
+        svg += mkIdRect("lb2", lX, half,          lbs, lBdH, C.battery_discharge);
+        svg += mkIdRect("lb3", lX, half + lBdH,   lbs, lGbH, C.grid);
+        svg += `<rect id="lb4" x="${(lX-2).toFixed(1)}" y="${(half-topH-2).toFixed(1)}"
+          width="${(lbs+4).toFixed(1)}" height="${Math.max(0,topH+botH+4).toFixed(1)}"
+          fill="none" stroke="var(--primary-text-color,#888)" stroke-opacity="0.3"
+          stroke-width="1" rx="4" ry="4" display="${topH+botH>0?'':'none'}"/>`;
+      }
 
       // kW labels left – number without unit, "kW" only on outermost label
       const lblStep = scale <= 3000 ? 500 : scale <= 10000 ? 1000 : 2000;
@@ -908,9 +1065,11 @@
       const pxW    = halfX / scale;                        // Pixel pro Watt
 
       const n       = Math.max(1, slots.length);
-      const slotH   = cfg.height / n;                      // Height per time slot
+      const minSlotH = 1.5;  // minimum px per slot for readability
+      const slotH   = Math.max(minSlotH, cfg.height / n);  // Height per time slot
+      const wfHact  = slotH * n;  // actual chart height (may exceed cfg.height)
       const slotGap = Math.max(0.3, slotH * 0.08);
-      const wfH     = cfg.height;                          // Total history height
+      const wfH     = wfHact;                              // Total history height (actual, may exceed cfg.height)
       const offsetY = lbH + 4;                             // History starts after live strip
       const totH    = offsetY + wfH + 40;                  // SVG total height (+kW labels at bottom)
 
@@ -921,7 +1080,14 @@
 
       const slotMs    = cfg.slot_duration_min * 60 * 1000;
       const tickSlots = Math.max(1, Math.floor(cfg.tick_interval_min * 60 * 1000 / slotMs));
-      const startMs   = Date.now() - cfg.time_window_h * 3600 * 1000;
+      // startMs: use historical date if set, otherwise live rolling window
+      const startMs = this._historyDate
+        ? (() => {
+            const ld = this._historyDate;
+            const [sh, sm] = (this._historyStart || "00:00").split(":").map(Number);
+            return new Date(ld.getFullYear(), ld.getMonth(), ld.getDate(), sh, sm, 0).getTime();
+          })()
+        : Date.now() - cfg.time_window_h * 3600 * 1000;
 
       let svg = "";
 
@@ -966,7 +1132,7 @@
       }
       for (let i = 0; i < slots.length; i += tickSlotsV) {
         const y     = offsetY + (n - 1 - i) * slotH + slotH / 2;
-        const label = this._formatTime(new Date(startMs + i * slotMs + slotMs / 2));
+        const label = this._formatTime(new Date(this._snapTickTime(startMs + i * slotMs + slotMs / 2, slotMs)));
         const xLbl  = wfW + 4;  // vertical: no stagger needed
         svg += svgLine(tickLeft, y, tickRight, y, "var(--secondary-text-color,#aaa)", 0.5, tickStroke);
         svg += `<text x="${xLbl.toFixed(1)}" y="${(y + 3).toFixed(1)}" font-size="9"
@@ -978,30 +1144,38 @@
       // Separator line live/history: full width including label area
       svg += svgLine(0, offsetY, cardW, offsetY, "var(--secondary-text-color,#aaa)", 0.35, 1);
 
-      // "Now" label on the right
-      svg += `<text x="${(wfW + 2).toFixed(1)}" y="${(lbH/2 + 4).toFixed(1)}" font-size="9"
-        text-anchor="start" fill="var(--secondary-text-color,#aaa)">▲</text>`;
+      // "Now" label on the right – live mode only
+      if (!this._historyDate) {
+        svg += `<text x="${(wfW + 2).toFixed(1)}" y="${(lbH/2 + 4).toFixed(1)}" font-size="9"
+          text-anchor="start" fill="var(--secondary-text-color,#aaa)">▲</text>`;
+      }
 
-      // Live strip (at the very top, IDs lb0-lb4)
-      // Left: solar (inner) + batt_charge (outer)
-      // Right: batt_discharge (inner) + grid (outer)
-      const lSW  = live.solar_to_house * pxW;
-      const lBcW = live.batt_charge    * pxW;
-      const lBdW = live.batt_discharge * pxW;
-      const lGbW = live.grid_buy       * pxW;
-      const leftW  = lSW + lBcW;
-      const rightW = lBdW + lGbW;
-      const lY = 2;
-      const lH = lbs;                                      // Live strip height = live_bar_size (exact)
+      // Live strip – only in live mode
+      if (!this._historyDate) {
+        // Live strip (at the very top, IDs lb0-lb4)
+        // Left: solar (inner) + batt_charge (outer)
+        // Right: batt_discharge (inner) + grid (outer)
+        const lSW  = live.solar_to_house * pxW;
+        const lBcW = live.batt_charge    * pxW;
+        const lBdW = live.batt_discharge * pxW;
+        const lGbW = live.grid_buy       * pxW;
+        const leftW  = lSW + lBcW;
+        const rightW = lBdW + lGbW;
+        const lY = 2;
+        const lH = lbs;                                      // Live strip height = live_bar_size (exact)
 
-      svg += mkIdRect("lb0", halfX - leftW,  lY, lBcW, lH, C.battery_charge);
-      svg += mkIdRect("lb1", halfX - lSW,    lY, lSW,  lH, C.solar);
-      svg += mkIdRect("lb2", halfX,          lY, lBdW, lH, C.battery_discharge);
-      svg += mkIdRect("lb3", halfX + lBdW,   lY, lGbW, lH, C.grid);
-      svg += `<rect id="lb4" x="${(halfX - leftW - 2).toFixed(1)}" y="${(lY-2).toFixed(1)}"
-        width="${Math.max(0, leftW + rightW + 4).toFixed(1)}" height="${(lH+4).toFixed(1)}"
-        fill="none" stroke="var(--primary-text-color,#888)" stroke-opacity="0.3"
-        stroke-width="1" rx="4" ry="4" display="${leftW+rightW>0?'':'none'}"/>`;
+        // Live bar rects – only in live mode
+        if (!this._historyDate) {
+          svg += mkIdRect("lb0", halfX - leftW,  lY, lBcW, lH, C.battery_charge);
+          svg += mkIdRect("lb1", halfX - lSW,    lY, lSW,  lH, C.solar);
+          svg += mkIdRect("lb2", halfX,          lY, lBdW, lH, C.battery_discharge);
+          svg += mkIdRect("lb3", halfX + lBdW,   lY, lGbW, lH, C.grid);
+          svg += `<rect id="lb4" x="${(halfX - leftW - 2).toFixed(1)}" y="${(lY-2).toFixed(1)}"
+            width="${Math.max(0, leftW + rightW + 4).toFixed(1)}" height="${(lH+4).toFixed(1)}"
+            fill="none" stroke="var(--primary-text-color,#888)" stroke-opacity="0.3"
+            stroke-width="1" rx="4" ry="4" display="${leftW+rightW>0?'':'none'}"/>`;
+        }
+      }
 
       // kW labels (bottom) – number without unit, "kW" only on outermost label
       const lblStep  = scale <= 3000 ? 500 : scale <= 10000 ? 1000 : 2000;
@@ -1082,6 +1256,47 @@
     }
 
     // ── Event-Handler VERTICAL ──────────────────────────────────────────────
+    _attachEventsH(slots, cfg, C) {
+      const svg = this.shadowRoot.getElementById("svg");
+      const tip = this.shadowRoot.getElementById("tip");
+      if (!svg || !tip) return;
+
+      const lbsH    = cfg.live_bar_size || 15;
+      const lbWH    = lbsH + 24;
+      const lPadH   = 30;
+      const wfW     = Math.max(200, this._cardWidth - lbWH - lPadH - 32);
+      const slotW   = wfW / slots.length;
+      const slotMs  = cfg.slot_duration_min * 60 * 1000;
+      const toMs    = (cfg.tooltip_timeout_s ?? 5) * 1000;
+
+      const hideTip = () => { tip.style.display = "none"; this._hoveredSlot = null; };
+      const resetTimer = () => {
+        if (this._tooltipTimer) clearTimeout(this._tooltipTimer);
+        this._tooltipTimer = setTimeout(hideTip, toMs);
+      };
+
+      svg.addEventListener("mousemove", (e) => {
+        const rect = svg.getBoundingClientRect();
+        const relX = e.clientX - rect.left;
+        const relY = e.clientY - rect.top;
+        // Live bar area (right of wfW+lPadH)
+        if (relX >= lPadH + wfW) {
+          this._showLiveTooltip(tip, cfg, C, e.clientX, e.clientY);
+          resetTimer();
+          return;
+        }
+        const idx = Math.floor((relX - lPadH) / slotW);
+        if (idx < 0 || idx >= slots.length) { hideTip(); return; }
+        this._showTooltip(tip, slots[idx], idx, cfg, C, slotMs, e.clientX, e.clientY);
+        this._highlightSlot(idx);
+        resetTimer();
+      });
+      svg.addEventListener("mouseleave", resetTimer);
+
+
+    }
+
+    // ── Event-Handler VERTICAL ──────────────────────────────────────────────
     _attachEventsV(slots, cfg, C) {
       const svg = this.shadowRoot.getElementById("svg");
       const tip = this.shadowRoot.getElementById("tip");
@@ -1091,9 +1306,16 @@
       const lbH    = (cfg.live_bar_size || 15) + 4;
       const offsetY = lbH + 4;
       const n       = slots.length;
-      const slotH   = cfg.height / Math.max(1, n);
-      const slotMs  = cfg.slot_duration_min * 60 * 1000;
+      const slotH   = Math.max(1.5, cfg.height / Math.max(1, n));
+      const slotMs  = (this._historySlotDuration || cfg.slot_duration_min) * 60 * 1000;
       const toMs    = (cfg.tooltip_timeout_s ?? 5) * 1000;
+      const startMs_v = this._historyDate
+        ? (() => {
+            const ld = this._historyDate;
+            const [sh, sm] = (this._historyStart || "00:00").split(":").map(Number);
+            return new Date(ld.getFullYear(), ld.getMonth(), ld.getDate(), sh, sm, 0).getTime();
+          })()
+        : Date.now() - slots.length * slotMs;
 
       const hideTip = () => { tip.style.display = "none"; this._hoveredSlot = null; };
       const resetTimer = () => {
@@ -1125,7 +1347,13 @@
 
     // ── Gemeinsame Tooltip-Anzeige ──────────────────────────────────────────
     _showTooltip(tip, s, idx, cfg, C, slotMs, clientX, clientY) {
-      const startMs = Date.now() - cfg.time_window_h * 3600 * 1000;
+      const startMs = this._historyDate
+        ? (() => {
+            const ld = this._historyDate;
+            const [sh, sm] = (this._historyStart || "00:00").split(":").map(Number);
+            return new Date(ld.getFullYear(), ld.getMonth(), ld.getDate(), sh, sm, 0).getTime();
+          })()
+        : Date.now() - cfg.time_window_h * 3600 * 1000;
       const time    = this._formatTime(new Date(startMs + idx * slotMs + slotMs / 2));
       const dot = (col) => `<span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${col};margin-right:5px;vertical-align:middle"></span>`;
       const minW = cfg.tooltip_min_w ?? 5;  // Watts
@@ -1150,7 +1378,9 @@
     }
 
     _openOverlay() {
-      if (document.getElementById("ewf-overlay")) return;
+      // Remove existing overlay if present (e.g. after navigation)
+      const existingOverlay = document.getElementById("ewf-overlay");
+      if (existingOverlay) existingOverlay.remove();
 
       const cfg   = this._config;
       const C     = cfg.colors;
@@ -1243,9 +1473,14 @@
       const savedWidth = this._cardWidth;
       this._cardWidth = tmpWidth + 80;
 
+      // Apply effective slot_duration_min in historical mode
+      const effectiveOverlayCfg = this._historyDate && this._historySlotDuration
+        ? { ...overlayCfg, slot_duration_min: this._historySlotDuration }
+        : overlayCfg;
+
       const svgHtml = isV
-        ? this._renderVertical(overlayCfg, C, lang, slots, live, scale)
-        : this._renderHorizontal(overlayCfg, C, lang, slots, live, scale);
+        ? this._renderVertical(effectiveOverlayCfg, C, lang, slots, live, scale)
+        : this._renderHorizontal(effectiveOverlayCfg, C, lang, slots, live, scale);
 
       this._cardWidth = savedWidth;
 
@@ -1255,6 +1490,25 @@
       const bgC    = getComputedStyle(document.documentElement).getPropertyValue("--ha-card-background").trim()
                   || getComputedStyle(document.documentElement).getPropertyValue("--card-background-color").trim()
                   || "#fff";
+
+      // Navigation bar for overlay
+      const ovIsHistorical = !!this._historyDate;
+      const ovTodayStr = new Date().toISOString().slice(0,10);
+      const ovHistDate = this._historyDate
+        ? `${this._historyDate.getFullYear()}-${String(this._historyDate.getMonth()+1).padStart(2,"0")}-${String(this._historyDate.getDate()).padStart(2,"0")}`
+        : ovTodayStr;
+      const ovNavBar = `
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:10px;font-size:${Math.round(11*(cfg.overlay_scale||1.4))}px;color:${secC}">
+          <button id="ovprev" style="background:rgba(128,128,128,.1);border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:3px 10px;color:${textC};cursor:pointer">◀</button>
+          <input type="date" id="ovdate" value="${ovHistDate}" max="${ovTodayStr}" style="background:rgba(128,128,128,.1);border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:3px 8px;color:${textC};font-size:${Math.round(11*(cfg.overlay_scale||1.4))}px">
+          <button id="ovnext" ${ovHistDate >= ovTodayStr ? "disabled" : ""} style="background:rgba(128,128,128,.1);border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:3px 10px;color:${textC};cursor:pointer">▶</button>
+          <span style="opacity:.4">│</span>
+          <input type="time" id="ovstart" value="${this._historyStart||"00:00"}" style="background:rgba(128,128,128,.1);border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:3px 8px;color:${textC};font-size:${Math.round(11*(cfg.overlay_scale||1.4))}px">
+          <span style="color:${secC}">–</span>
+          <input type="time" id="ovend" value="${(this._historyEnd||"24:00").replace("24:00","23:59")}" style="background:rgba(128,128,128,.1);border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:3px 8px;color:${textC};font-size:${Math.round(11*(cfg.overlay_scale||1.4))}px">
+          <span style="opacity:.4">│</span>
+          <button id="ovlive" style="background:${!ovIsHistorical?"var(--primary-color,#039be5)":"rgba(128,128,128,.1)"};border:1px solid rgba(128,128,128,.3);border-radius:6px;padding:3px 10px;color:${!ovIsHistorical?"#fff":textC};cursor:pointer">▶ Live</button>
+        </div>`;
 
       card.innerHTML = `
         <style>
@@ -1279,8 +1533,54 @@
           svg text { fill:${secC}; font-size:${Math.round(9 * (cfg.overlay_scale || 1.4))}px !important; }
         </style>
         ${svgHtml}
+        ${ovNavBar}
       `;
       card.appendChild(closeBtn);
+
+      // Navigation bar listeners in overlay
+      const reloadOverlay = () => { overlay.remove(); this._openOverlay(); };
+
+      const ovDateEl  = card.querySelector("#ovdate");
+      const ovStartEl = card.querySelector("#ovstart");
+      const ovEndEl   = card.querySelector("#ovend");
+      const ovPrevEl  = card.querySelector("#ovprev");
+      const ovNextEl  = card.querySelector("#ovnext");
+      const ovLiveEl  = card.querySelector("#ovlive");
+
+      const ovLoad = () => {
+        if (!ovDateEl) return;
+        const [dy, dm, dd] = ovDateEl.value.split("-").map(Number);
+        this._historyDate  = new Date(dy, dm-1, dd, 12, 0, 0);
+        this._historyStart = ovStartEl?.value || "00:00";
+        const ev = ovEndEl?.value || "23:59";
+        this._historyEnd   = ev === "23:59" ? "24:00" : ev;
+        this._historyLoaded = false;
+        this._loadHistory().then(() => reloadOverlay());
+      };
+
+      if (ovDateEl)  ovDateEl.addEventListener("change",  ovLoad);
+      if (ovStartEl) ovStartEl.addEventListener("change", ovLoad);
+      if (ovEndEl)   ovEndEl.addEventListener("change",   ovLoad);
+      if (ovPrevEl)  ovPrevEl.addEventListener("click", () => {
+        const d = this._historyDate ? new Date(this._historyDate) : new Date();
+        d.setDate(d.getDate() - 1);
+        this._historyDate = d;
+        this._historyLoaded = false;
+        this._loadHistory().then(() => reloadOverlay());
+      });
+      if (ovNextEl)  ovNextEl.addEventListener("click", () => {
+        const d = this._historyDate ? new Date(this._historyDate) : new Date();
+        d.setDate(d.getDate() + 1);
+        if (d > new Date()) return;
+        this._historyDate = d;
+        this._historyLoaded = false;
+        this._loadHistory().then(() => reloadOverlay());
+      });
+      if (ovLiveEl)  ovLiveEl.addEventListener("click", () => {
+        this._historyDate = null;
+        this._historyLoaded = false;
+        this._loadHistory().then(() => reloadOverlay());
+      });
 
       // Min/Max trigger in overlay legend
       setTimeout(() => {
@@ -1292,7 +1592,8 @@
           const isVOv  = cfg.layout === "vertical";
           const nOv    = slots.length;
           const lbsOv  = cfg.live_bar_size || 15;
-          const lbWOv  = lbsOv + 24;
+          // No live bar area in historical mode
+          const lbWOv  = this._historyDate ? 0 : lbsOv + 24;
           const lPadOv = 30;
           const wfWOv  = Math.max(200, tmpWidth + 80 - lbWOv - lPadOv - 32);
           const labWOv = 52;
@@ -1339,7 +1640,7 @@
       const tip = card.querySelector("#tip");
       const svg = card.querySelector("#svg");
       if (svg && tip && slots.length > 0) {
-        const slotMs = cfg.slot_duration_min * 60 * 1000;
+        const slotMs = (this._historySlotDuration || cfg.slot_duration_min) * 60 * 1000;
         const toMs   = (cfg.tooltip_timeout_s ?? 5) * 1000;
         const hideTip = () => { tip.style.display = "none"; };
         const resetTimer = () => {
@@ -1348,13 +1649,15 @@
         };
         if (isV) {
           const lbH2    = (cfg.live_bar_size || 15) + 4;
-          const offsetY2 = lbH2 + 4;
+          const offsetY2 = lbH2 + 4;  // always offset by live strip area (even in historical mode, SVG reserves this space)
           const n2      = slots.length;
-          const slotH2  = overlayHeight / Math.max(1, n2);
+          // Match the actual slotH used in rendering (min 1.5px)
+          const slotH2raw = overlayHeight / Math.max(1, n2);
+          const slotH2    = Math.max(1.5, slotH2raw);
           svg.addEventListener("mousemove", (e) => {
             const rect = svg.getBoundingClientRect();
             const relY = e.clientY - rect.top - offsetY2;
-            if (relY < 0) { this._showLiveTooltip(tip, cfg, C, e.clientX, e.clientY); resetTimer(); return; }
+            if (relY < 0 && !this._historyDate) { this._showLiveTooltip(tip, cfg, C, e.clientX, e.clientY); resetTimer(); return; }
             const idx = (n2-1) - Math.floor(relY / slotH2);
             if (idx < 0 || idx >= slots.length) { hideTip(); return; }
             this._showTooltip(tip, slots[idx], idx, cfg, C, slotMs, e.clientX, e.clientY);
@@ -1370,7 +1673,7 @@
           svg.addEventListener("mousemove", (e) => {
             const rect = svg.getBoundingClientRect();
             const relX = e.clientX - rect.left;
-            if (relX >= lPad2 + wfW2) { this._showLiveTooltip(tip, cfg, C, e.clientX, e.clientY); resetTimer(); return; }
+            if (relX >= lPad2 + wfW2 && !this._historyDate) { this._showLiveTooltip(tip, cfg, C, e.clientX, e.clientY); resetTimer(); return; }
             const idx = Math.floor((relX - lPad2) / slotW2);
             if (idx < 0 || idx >= slots.length) { hideTip(); return; }
             this._showTooltip(tip, slots[idx], idx, cfg, C, slotMs, e.clientX, e.clientY);
@@ -1520,7 +1823,7 @@
     }
 
     _showMinMaxTooltip(tip, slots, cfg, clientX, clientY, svg, isV, dims) {
-      const slotMs = cfg.slot_duration_min * 60 * 1000;
+      const slotMs = (this._historySlotDuration || cfg.slot_duration_min) * 60 * 1000;
       const mm     = this._computeMinMax(slots, slotMs, cfg);
       if (!mm) return;
       const lang = this._lang;

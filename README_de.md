@@ -2,10 +2,10 @@
 
 Eine benutzerdefinierte Home Assistant Lovelace-Karte, die den Energiefluss aus PV-Anlage, Batterie und Netz als Wasserfall-Diagramm mit Live-Anzeige und Verlaufshistorie darstellt.
 
-![Version](https://img.shields.io/badge/version-1.0.0-green)
+![Version](https://img.shields.io/badge/version-1.1.0-green)
 ![HA](https://img.shields.io/badge/Home%20Assistant-2023.3%2B-blue)
 
-🇬🇧 [English documentation](README.md)
+[![DE](https://img.shields.io/badge/README-DE-orange?style=flat-square)](README_de.md) [![EN](https://img.shields.io/badge/README-EN-blue?style=flat-square)](README.md)
 
 ---
 
@@ -43,6 +43,12 @@ Eine benutzerdefinierte Home Assistant Lovelace-Karte, die den Energiefluss aus 
 - **Responsive** — ResizeObserver mit Debounce, passt sich Kartenbreite an
 - **Dark/Light-Mode** — Vollbild-Overlay übernimmt automatisch das aktive HA-Theme
 - **Zweisprachig** — Deutsch und Englisch (automatisch per HA-Spracheinstellung), inkl. Editor
+- **History-Viewer** — beliebige vergangene Tage direkt in der Karte oder im Vollbild-Overlay ansehen
+  - Datums-Picker + ◀/▶ Tagesnavigation
+  - Einstellbare Start- und Endzeit (z.B. nur Solarzeit: 06:00–21:00)
+  - Automatische Slot-Dauer je nach Zeitfenster (1/2/4 min)
+  - Live-Balken im historischen Modus ausgeblendet
+  - Navigation auch im Vollbild-Overlay verfügbar
 - **Keine externen Abhängigkeiten** — reines Vanilla JS, kein Lit, kein Import
 
 ---
@@ -115,6 +121,10 @@ overlay_scale: 1.4            # Schrift-Faktor im Vollbild-Overlay (1.0–3.0)
 min_scale_w: 5000             # Mindest-Skalierung der Energieachse in Watt
 headroom_pct: 15              # Zusätzlicher Platz über dem höchsten Wert in % (0–50)
 
+# History-Viewer Standardwerte (überschreibbar per Navigationsleiste)
+history_start: "00:00"        # Standard-Startzeit für die historische Ansicht
+history_end:   "24:00"        # Standard-Endzeit für die historische Ansicht
+
 # Optionen
 invert_battery: false         # Batterie-Vorzeichen invertieren (für nicht-Deye Wechselrichter)
 
@@ -154,6 +164,8 @@ colors:
 | `height` | `200` | Kartenhöhe in px |
 | `min_scale_w` | `5000` | Mindest-Skalierung der Energieachse in Watt |
 | `headroom_pct` | `15` | Zusätzlicher Platz über Peakwert in % |
+| `history_start` | `"00:00"` | Standard-Startzeit für den History-Viewer |
+| `history_end` | `"24:00"` | Standard-Endzeit für den History-Viewer |
 | `invert_battery` | `false` | Batterie-Vorzeichen invertieren |
 | `colors.solar` | `#FFD400` | Farbe Solar (Hex) |
 | `colors.battery_charge` | `#00C853` | Farbe Akku laden (Hex) |
@@ -248,6 +260,33 @@ Bei umgekehrtem Batterie-Vorzeichen: `invert_battery: true`
 - Energie: **links** = Solar + Laden, **rechts** = Entladen + Netzbezug
 - Live-Streifen ganz **oben**
 - Stundenmarker alle 2 Stunden
+
+---
+
+## History-Viewer
+
+Klick auf ◀ oder Datum eingeben in der Navigationsleiste unter dem Chart um vergangene Tage anzusehen.
+
+```
+[◀]  [📅 2026-05-22]  [▶]  │  [06:00] – [21:00]  │  [▶ Live]
+```
+
+- **◀/▶** — tageweise navigieren
+- **Datums-Picker** — direkt zu einem beliebigen Datum springen
+- **Start/End-Zeit** — Zeitfenster einschränken, z.B. nur Solarzeit (`06:00–21:00`)
+- **▶ Live** — zurück zum Live-Modus
+- **Automatische Slot-Dauer** — wird automatisch nach Zeitfenster gewählt:
+  - ≤ 4h → 1 min Slots
+  - ≤ 12h → 2 min Slots
+  - 24h → 4 min Slots
+- **Vollbild-Overlay** — Navigationsleiste auch dort verfügbar
+- **Wie weit zurück?** — begrenzt durch die HA Recorder-Aufbewahrung (`purge_keep_days`, Standard 10 Tage)
+
+> **Hinweis:** Um die Aufbewahrungsdauer zu verlängern, `purge_keep_days` in der `configuration.yaml` setzen:
+> ```yaml
+> recorder:
+>   purge_keep_days: 30
+> ```
 
 ---
 
